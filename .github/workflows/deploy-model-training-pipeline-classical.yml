@@ -6,64 +6,100 @@ on:
     branches:
       - main
 
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
-  get-config:
-    uses: Azure/mlops-templates/.github/workflows/read-yaml.yml@main
-    with:
-      file_name: config-infra-prod.yml
+  deploy-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-  create-compute:
-    needs: get-config
-    uses: Azure/mlops-templates/.github/workflows/create-compute.yml@main
-    with:
-      cluster_name: cpu-cluster
-      size: Standard_DS11_v2
-      min_instances: 0
-      max_instances: 1
-      cluster_tier: dedicated
-      resource_group: ${{ needs.get-config.outputs.resource_group }}
-      workspace_name: ${{ needs.get-config.outputs.aml_workspace }}
-    secrets:
-      creds: ${{secrets.AZURE_CREDENTIALS}}
-      AZURE_CLIENT_ID: ${{secrets.AZURE_CLIENT_ID}}
-      AZURE_TENANT_ID: ${{secrets.AZURE_TENANT_ID}}
-      AZURE_SUBSCRIPTION_ID: ${{secrets.AZURE_SUBSCRIPTION_ID}}
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{secrets.AZURE_CREDENTIALS}}
 
-  register-dataset:
-    needs: create-compute
-    uses: Azure/mlops-templates/.github/workflows/register-dataset.yml@main
-    with:
-      resource_group: ${{ needs.get-config.outputs.resource_group }}
-      workspace_name: ${{ needs.get-config.outputs.aml_workspace }}
-      data_file: mlops/azureml/train/data.yml
-    secrets:
-      creds: ${{secrets.AZURE_CREDENTIALS}}
-      AZURE_CLIENT_ID: ${{secrets.AZURE_CLIENT_ID}}
-      AZURE_TENANT_ID: ${{secrets.AZURE_TENANT_ID}}
-      AZURE_SUBSCRIPTION_ID: ${{secrets.AZURE_SUBSCRIPTION_ID}}
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.8'
 
-  register-environment:
-    needs: create-compute
-    uses: Azure/mlops-templates/.github/workflows/register-environment.yml@main
-    with:
-      resource_group: ${{ needs.get-config.outputs.resource_group }}
-      workspace_name: ${{ needs.get-config.outputs.aml_workspace }}
-      env_file: mlops/azureml/train/train-env.yml
-    secrets:
-      creds: ${{secrets.AZURE_CREDENTIALS}}
-      AZURE_CLIENT_ID: ${{secrets.AZURE_CLIENT_ID}}
-      AZURE_TENANT_ID: ${{secrets.AZURE_TENANT_ID}}
-      AZURE_SUBSCRIPTION_ID: ${{secrets.AZURE_SUBSCRIPTION_ID}}
+      - name: Install dependencies
+        run: |
+          pip install azure-ai-ml azure-identity
 
-  run-pipeline:
-    needs: [register-dataset, register-environment]
-    uses: Azure/mlops-templates/.github/workflows/run-pipeline.yml@main
-    with:
-      resource_group: ${{ needs.get-config.outputs.resource_group }}
-      workspace_name: ${{ needs.get-config.outputs.aml_workspace }}
-      parameters-file: mlops/azureml/train/newpipeline.yml
-    secrets:
-      creds: ${{secrets.AZURE_CREDENTIALS}}
-      AZURE_CLIENT_ID: ${{secrets.AZURE_CLIENT_ID}}
-      AZURE_TENANT_ID: ${{secrets.AZURE_TENANT_ID}}
-      AZURE_SUBSCRIPTION_ID: ${{secrets.AZURE_SUBSCRIPTION_ID}}
+      - name: Create Compute Cluster
+        run: |
+          python - <<EOF
+          from azure.ai.ml import MLClient
+          from azure.ai.ml.entities import AmlCompute
+          from azure.identity import DefaultAzureCredential
+
+          ml_client = MLClient(
+              DefaultAzureCredential(),
+              subscription_id="${{secrets.AZURE_SUBSCRIPTION_ID}}",
+              resource_group_name="default_resoruce_group",
+              workspace_name="luis_workspace"
+          )
+
+          try:
+              ml_client.compute.get("cpu-cluster")
+              print("Cluster already exists")
+          except:
+              compute = AmlCompute(
+                  name="cpu-cluster",
+                  size="Standard_DS11_v2",
+                  min_instances=0,
+                  max_instances=1,
+              )
+              ml_client.compute.begin_create_or_update(compute).result()
+              print("Cluster created")
+          EOF
+
+      - name: Register Dataset
+        run: |
+          python - <<EOF
+          from azure.ai.ml import MLClient
+          from azure.ai.ml.entities import Data
+          from azure.ai.ml.constants import AssetTypes
+          from azure.identity import DefaultAzureCredential
+
+          ml_client = MLClient(
+              DefaultAzureCredential(),
+              subscription_id="${{secrets.AZURE_SUBSCRIPTION_ID}}",
+              resource_group_name="default_resoruce_group",
+              workspace_name="luis_workspace"
+          )
+
+          data_asset = Data(
+              path="./data/used_cars.csv",
+              type=AssetTypes.URI_FILE,
+              description="Dataset of used cars for price prediction",
+              name="used-cars-data"
+          )
+          ml_client.data.create_or_update(data_asset)
+          print("Dataset registered")
+          EOF
+
+      - name: Run Pipeline
+        run: |
+          python - <<EOF
+          from azure.ai.ml import MLClient, load_job
+          from azure.identity import DefaultAzureCredential
+
+          ml_client = MLClient(
+              DefaultAzureCredential(),
+              subscription_id="${{secrets.AZURE_SUBSCRIPTION_ID}}",
+              resource_group_name="default_resoruce_group",
+              workspace_name="luis_workspace"
+          )
+
+          pipeline_job = ml_client.jobs.create_or_update(
+              load_job("mlops/azureml/train/newpipeline.yml"),
+              experiment_name="price_prediction_pipeline"
+          )
+          print(f"Pipeline submitted: {pipeline_job.name}")
+          EOF
