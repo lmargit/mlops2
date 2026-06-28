@@ -1,3 +1,6 @@
+# CI/CD Validation - Updated for automated pipeline trigger
+# Version 2.0 - Used cars price prediction
+
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
 """
