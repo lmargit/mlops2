@@ -87,7 +87,7 @@ jobs:
       - name: Run Pipeline
         run: |
           python - <<EOF
-          from azure.ai.ml import MLClient, load_job
+          from azure.ai.ml import MLClient
           from azure.identity import DefaultAzureCredential
 
           ml_client = MLClient(
@@ -97,8 +97,9 @@ jobs:
               workspace_name="luis_workspace"
           )
 
+          # Clone and resubmit the successful pipeline
           pipeline_job = ml_client.jobs.create_or_update(
-              load_job("mlops/azureml/train/newpipeline.yml"),
+              ml_client.jobs.get("epic_caravan_56g6jjvy2t"),
               experiment_name="price_prediction_pipeline"
           )
           print(f"Pipeline submitted: {pipeline_job.name}")
